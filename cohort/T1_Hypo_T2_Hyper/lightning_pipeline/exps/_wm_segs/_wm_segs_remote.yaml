@@ -1,0 +1,47 @@
+# Execusion mode
+exe_mode: "local_windows"
+# Data root directory
+root_dir: "/home/dma73/Data/Brain_MRI/T1_Hypo_T2_Hyper/UBCMIXDEM_WMHT1T2relationships"
+# [Optional] library directory (will be depreciated)
+# code_dir: "c:/Users/dma73/Codes/VHA/vha-dnn/med_deeplearning/med_deeplearning/monai_pytorch_lightning"
+
+# experiment name
+exp_name: "wm_segs_remote"
+
+# Image image type
+image_type : T1 # T2           # T1+T2
+seg_type   : WM # T1 (Leision) # T2 (Leision)  # WM+T1 # WM+T2 # WM+T1+T2
+
+# ========= data-specific parameters =============
+dataset_type : "CacheDataset" # PersistentDataset
+
+# ========== model-specific parameters ==========
+in_channel : 1
+label_num  : 10   # number of labels
+
+# raw segmentation labels ID numbers
+raw_labels : [5, 11, 12, 13, 14, 21, 22, 23, 24]
+
+# [optional] parameters number of residual units needed for the unet 3d
+num_res_units : 2
+
+# ======== training-specific parameters ==========
+batch_size_train : 54
+patch_size       : [64, 64, 64]
+lr               : 1e-3
+max_epochs       : 10
+
+# ========= evaluation-specific parameters ========
+batch_size_val : 1
+eval_mode      : "whole" # "whole" or "crop"
+# --- for sliding_window_inference
+sw_batch_size     : 6
+sw_overlap_ratio  : 0.25   # patch overlap for sliding_window_inference
+
+# ========= Optional paremeter =====
+# --- for "ModelCheckpoint" callback
+monitor       : "val_dice" # default
+monitor_mode  : "max"      # default
+save_top_k    : 1          # default
+
+device        : cuda

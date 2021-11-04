@@ -6,11 +6,25 @@ import argparse
 from datetime import datetime
 from glob import glob
 
-# import customized libraries 
-sys.path.append(os.path.abspath('../../../../../med_deeplearning/monai_pytorch_lightning'))
+import monai.transforms as t
+from monai.data import DataLoader, Dataset
+from monai.inferers import sliding_window_inference
+
+# %% import customized libraries 
+sys.path.append(os.path.abspath('../../../../monai_pytorch_lightning'))
 
 import datasets, train, utils, models
 from transforms import LabelValueRemapd # LabelValueScaled
+import visualization as viz
+# can potentially improve the speed of numpy value remapping using:
+# https://stackoverflow.com/questions/3403973/fast-replacement-of-values-in-a-numpy-array
+# k = np.array(list(mapping.keys()))
+# v = np.array(list(mapping.values()))
+
+# mapping_ar = np.zeros(k.max()+1,dtype=v.dtype) #k,v from approach #1
+# mapping_ar[k] = v
+# out = mapping_ar[input_array]
+
 
 # from importlib import reload
 # import numpy as np
@@ -20,6 +34,8 @@ from transforms import LabelValueRemapd # LabelValueScaled
 # import monai
 # from monai.data import decollate_batch
 
+#%% need to setup: os.environ["DATA_ROOT"]
+# e.g.: os.environ["DATA_ROOT"] = f"/project/rrg-mfbeg-ad/dma73/Data/Brain_MRI/T1_Hypo_T2_Hyper/UBCMIXDEM_WMHT1T2relationships"
 
 #%% 
 def get_image_label_paths(cfg):
@@ -28,7 +44,8 @@ def get_image_label_paths(cfg):
   # prepare_data_module(cfg)
   '''
   ## prepare all data types
-  root_dir = Path(cfg["root_dir"])
+  # root_dir = Path(cfg["root_dir"])
+  root_dir = os.getenv("DATA_ROOT")
 
   images_dir = Path(f"{root_dir}/RAW_DATA/")
   # T1
@@ -191,16 +208,70 @@ def test_suit():
   verbose=True
   quickcheck=True
 
-# %% model inference function
-def model_inference(yaml_file, ckpt_path, input_path):
+# %% model inference function (using sliding window inference)
+def model_inference(yaml_file, ckpt_path, input_paths,  output_paths, pixdim=(1.0, 1.0, 1.2), axcodes="RAS", device='cuda', batch_size=1, verbose=True, sw_batch_size=1, overlap=0.25):
   '''segmentation model inference
   - yaml_file: yaml file used to create the model and transformations.
   - ckpt_path: model checkpoint path
   - input_path: path of the input (nifti) file
   # Ref: https://www.kaggle.com/shivanandmn/efficientnet-pytorch-lightning-train-inference
   '''
+
+  # %%
+  if not os.path.isfile(ckpt_path): 
+      raise FileNotFoundError(f"{ckpt_path} does not exist")
   
+  #%% read yaml_file
+  cfg = utils.read_yaml(yaml_file)
   
+  # %% 
+  # create test/inference transformations
+  test_transforms = t.Compose([
+    # deterministic
+    t.LoadImaged(keys=["image"]),
+    t.AddChanneld(keys=['image']),
+    t.Spacingd(keys=['image'],pixdim=pixdim, mode=("bilinear")),
+    t.Orientationd(keys=["image"], axcodes=axcodes),
+    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+    t.ToTensord(keys=["image"]),
+    t.EnsureTyped(keys=["image"], data_type='tensor'),
+  ])
+
+  # %%
+  if not isinstance(input_paths, list):
+    input_paths = [input_paths]
+  if not isinstance(output_paths, list):
+    output_paths = [output_paths]
+  #  create test data dict
+  test_data_dicts = [{"image": str(input_path), "output": str(output_path)} for input_path,output_path in zip(input_paths, output_paths)]
+  test_dataset = Dataset(test_data_dicts,transform=test_transforms)
+  test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+
+  # %%
+  # check shape
+  # Alternative straightforward way to create single test data
+  # test_data = test_transforms(test_data_dicts)
+  # test_data[0]['image'].unsqueeze(0).to(device).shape
+
+  # %% 
+  # create model
+  model = create_model(cfg)
+
+  # %% 
+  # input model weight from ckpt_path
+  if verbose > 0: 
+    print(f"  >>> loading model from {ckpt_path}")
+  model.load_from_checkpoint(checkpoint_path=ckpt_path, net=model._model, map_location=device, strict=False, verbose=verbose);
+  # same as: model.load_state_dict(torch.load(ckpt_path, map_location=device)['state_dict'], strict=False, verbose=verbose)
+  model.eval()
+  model.to(device);
+  # %%
+  # inference
+  for test_batch in test_dataloader:
+    img = test_batch['image'].to(device)
+    print(img.shape)
+    test_outputs = sliding_window_inference(inputs=img, roi_size=cfg['patch_size'], sw_batch_size=sw_batch_size, predictor=model, overlap=overlap)
+    # break
 
 
 # %% core model validation function
@@ -251,15 +322,15 @@ def evaluate_model(yaml_file, ckpt_path=None, data=None, model=None, eval_mode="
       model.load_from_checkpoint(checkpoint_path=ckpt_path, net=model._model, map_location=device, strict=False);
       # model.load_state_dict(torch.load(ckpt_path))
       model.eval()
-      model.to(device)
+      model.to(device);
 
     # %%
     for val_id in range(len(data.valid_data)):
       # get one bath of the validation data (in total only two)
       val_batch = data.valid_data[val_id]
       # add the batch channel
-      img = val_batch['image'].unsqueeze(1).to(device)
-      lbl = val_batch['label'].unsqueeze(1).to(device)
+      img = val_batch['image'].unsqueeze(0).to(device)
+      lbl = val_batch['label'].unsqueeze(0).to(device)
       print(img.shape, lbl.shape)
 
       # %%

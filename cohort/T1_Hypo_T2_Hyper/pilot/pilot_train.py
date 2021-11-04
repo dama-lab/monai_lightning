@@ -603,4 +603,24 @@ prediction = tio.ScalarImage(tensor=foreground, affine=affine)
 subject.add_image(prediction, 'prediction')
 subject.plot(figsize=(9, 8), cmap_dict={'prediction': 'RdBu_r'})
 
-# %%
+# %% change location to full path using `os.path.expandvars`
+# ref https://stackoverflow.com/questions/52412297/how-to-replace-environment-variable-value-in-yaml-file-to-be-parsed-using-python
+# os.path.abspath()
+# https://www.geeksforgeeks.org/python-os-path-abspath-method-with-example/
+
+for key, value in yaml_dict.items():
+  if key == 'root_dir':
+    print(f"{key}: {os.path.expandvars(value)}")
+  else:
+    print(f"{key}: {value}")
+
+#%% test file copying speed:
+rsync -r --progress --info=progress2
+
+# %% SSHFS (not working properly)
+# https://docs.pyfilesystem.org/en/latest/openers.html
+# https://pypi.org/project/fs.sshfs/
+import fs
+cedar = fs.open_fs('ssh://cedar/')
+from fs.sshfs import SSHFS
+cedar = SSHFS(host="cedar")

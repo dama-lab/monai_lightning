@@ -13,6 +13,11 @@
 ----- requirement.txt -----
 nipype
 matplotlib
+
 pytorch
 pytorch-lightning
 monai
+
+scikit-image
+scikit-learn
+opencv

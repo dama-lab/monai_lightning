@@ -1,6 +1,7 @@
 #%% import libraries
 from typing import Any, Dict, Hashable, Mapping, Optional, Sequence, Tuple, Union
 import yaml
+from monai.data import NiftiSaver
 # from monai.config import DtypeLike, KeysCollection, NdarrayTensor
 # import monai.transforms as t
 # from monai.transforms.spatial.dictionary import *
@@ -54,6 +55,13 @@ def read_nib(input_file, return_type="numpy"):
   elif return_type == "numpy":
     vol = nib_obj.get_fdata().transpose()
     return vol 
+
+def save_batch_to_nifti(batch_vol, meta_data=None, output_dir='./', output_postfix='', output_ext='.nii.gz', resample=False, squeeze_end_dims=True, data_root_dir='', separate_folder=False, print_log=True):
+  '''save vol (torch.tensor or numpy.Array) to nibabel supported file format'''
+  # %%
+  nifti_saver = NiftiSaver(output_dir=output_dir, output_postfix=output_postfix, output_ext=output_ext, resample=resample, squeeze_end_dims=squeeze_end_dims, data_root_dir=data_root_dir, separate_folder=separate_folder, print_log=print_log)
+
+  nifti_saver.save_batch(batch_data=batch_vol, meta_data=meta_data)
 
 # =================================================================
 #%% =========== file conversion ======= (e.g. convert mgz to nifti)

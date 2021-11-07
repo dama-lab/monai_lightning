@@ -209,11 +209,12 @@ def test_suit():
   quickcheck=True
 
 # %% model inference function (using sliding window inference)
-def model_inference(yaml_file, ckpt_path, input_paths,  output_paths, pixdim=(1.0, 1.0, 1.2), axcodes="RAS", device='cuda', batch_size=1, verbose=True, sw_batch_size=1, overlap=0.25):
+def model_inference(yaml_file, ckpt_path, input_paths, output_dir, pixdim=(1.0, 1.0, 1.2), axcodes="RAS", device='cuda', batch_size=1, verbose=True, sw_batch_size=1, overlap=0.25, quickcheck=False, output_postfix='', output_ext='.nii.gz', data_root_dir=''):
   '''segmentation model inference
   - yaml_file: yaml file used to create the model and transformations.
   - ckpt_path: model checkpoint path
   - input_path: path of the input (nifti) file
+  - data_root_dir: input paths data root 
   # Ref: https://www.kaggle.com/shivanandmn/efficientnet-pytorch-lightning-train-inference
   '''
 
@@ -240,10 +241,10 @@ def model_inference(yaml_file, ckpt_path, input_paths,  output_paths, pixdim=(1.
   # %%
   if not isinstance(input_paths, list):
     input_paths = [input_paths]
-  if not isinstance(output_paths, list):
-    output_paths = [output_paths]
+  # if not isinstance(output_paths, list):
+  #   output_paths = [output_paths]
   #  create test data dict
-  test_data_dicts = [{"image": str(input_path), "output": str(output_path)} for input_path,output_path in zip(input_paths, output_paths)]
+  test_data_dicts = [{"image": str(input_path)} for input_path in input_paths]
   test_dataset = Dataset(test_data_dicts,transform=test_transforms)
   test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -271,6 +272,19 @@ def model_inference(yaml_file, ckpt_path, input_paths,  output_paths, pixdim=(1.
     img = test_batch['image'].to(device)
     print(img.shape)
     test_outputs = sliding_window_inference(inputs=img, roi_size=cfg['patch_size'], sw_batch_size=sw_batch_size, predictor=model, overlap=overlap)
+    # %%
+    # display segmentation results for the first on ein the batch
+    batch_id = 0
+    if quickcheck == True:
+      vol = img[batch_id].detach().cpu().squeeze()
+      seg = test_outputs.argmax(dim=1)[batch_id].detach().cpu().squeeze()
+      viz.vol_peek(vol=vol, overlay_vol=seg)
+    
+    # %% 
+    
+    # save the output segmentation 
+    batch_vol = test_outputs.argmax(dim=1, keepdims=True)
+    utils.save_batch_to_nifti(batch_vol, meta_data=None, output_dir=output_dir, output_postfix=output_postfix, output_ext=output_ext, resample=False, squeeze_end_dims=True, data_root_dir=data_root_dir, separate_folder=False, print_log=True)
     # break
 
 

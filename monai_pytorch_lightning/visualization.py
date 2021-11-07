@@ -42,7 +42,7 @@ def vol_peek(vol:tuple([np.array,torch.Tensor,Path,str]),
         rescaleTo: (ct = [0,255])
         flipud
         overlay_vol:
-        overlay_surf: [width,depth,layer]
+        overlay_surf: [layer,width,depth]
         alpha: transparency of the overlay image/contour
         volThre: volume threshold (e.g. [-190 150] for ct)
         volCmap:
@@ -145,7 +145,12 @@ def vol_peek(vol:tuple([np.array,torch.Tensor,Path,str]),
 
         # overlay surf
         if overlay_surf is not None:
-          plt.plot(overlay_surf[:,slice_no,:])
+          # [layer,width] ==transpose==> [width, layer]
+          for layer in range(overlay_surf.shape[0]):
+            plt.plot(overlay_surf[layer,:,slice_no])
+          # alternatively, same as: 
+          # plt.plot(overlay_surf[:,:,slice_no].transpose())
+
 
     if fig_title is not None:
       # fig_title = f'Total number of slice: {num_slices}'

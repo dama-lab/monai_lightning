@@ -3,7 +3,7 @@ import os
 from glob import glob
 # %% 
 # data root
-os.environ["DATA_ROOT"] = f"/project/rrg-mfbeg-ad/dma73/Data/Brain_MRI/T1_Hypo_T2_Hyper/UBCMIXDEM_WMHT1T2relationships"
+os.environ["DATA_ROOT"] = f"/home/dma73/Data/Brain_MRI/T1_Hypo_T2_Hyper/UBCMIXDEM_WMHT1T2relationships"
 
 data_root = os.environ["DATA_ROOT"]
 # yaml config file

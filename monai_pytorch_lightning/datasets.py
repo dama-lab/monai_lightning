@@ -14,74 +14,9 @@ import monai.transforms as t
 # import monai
 # from transforms import LabelValueScaled
 
-# %% setup transforms for training and validation
-def transforms(pixdim=(1.0, 1.0, 1.2), patch_size=(96, 96, 96), axcodes="RAS", label_transformations=[]):
-  '''
-  - Sample `label_transformations` function:
-    - T1 leision label: `LabelValueScaled(keys=['label'],scale=1)` # doing nothing
-    - T2 leision label: `LabelValueScaled(keys=['label'],scale=1/1000)`
-    - T1 parcellation label: need to remap, not yet implemented 
-    - get nifty pixel dimension using: nib.load(*).header.get_zooms()
-  '''
-  train_transforms = t.Compose([
-    # deterministic
-    t.LoadImaged(keys=["image","label"]),
-    t.AddChanneld(keys=['image','label']),
-    t.Spacingd(keys=['image','label'], pixdim=pixdim, mode=("bilinear", "nearest"),),
-    t.Orientationd(keys=["image", "label"], axcodes=axcodes),
-    # scale label value (maxmum value of the current dataset is: 2769630.8 (float32))
-    # t.ScaleIntensityRanged(keys=["image","label"], a_min=0, a_max=2800000, b_min=0.0, b_max=1.0, clip=True),
-    # CropForeground by default create bbox that exclude surrounding zero pixels in the "image"
-    t.CropForegroundd(keys=["image", "label"], source_key="image"),
-    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-    
-    # random transformation
-    # randomly crop out patch samples from big image based on pos / neg ratio
-    # the image centers of negative samples must be in valid image area
-    t.RandCropByPosNegLabeld(
-      keys=["image", "label"],
-      label_key="label",
-      spatial_size=patch_size,
-      pos=1,
-      neg=1,
-      num_samples=4,
-      image_key="image",
-      image_threshold=0,),
-    t.RandScaleIntensityd(keys='image', factors=0.1, prob=0.5),
-    t.RandShiftIntensityd(keys='image', offsets=0.1, prob=0.5),
-    t.RandAffined(
-      keys=["image","label"],
-      mode=("bilinear","nearest"),
-      prob=0.5,
-      spatial_size=patch_size,
-      rotate_range=(0, 0, ),
-      scale_range=(0.1,0.1,0.1),
-    ),
-    *label_transformations,
-    # LabelValueScaled(keys=['label'],scale=1),
-    t.ToTensord(keys=["image","label"]),
-    t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
-  ])
-  val_transforms = t.Compose([
-    # deterministic
-    t.LoadImaged(keys=["image","label"]),
-    t.AddChanneld(keys=['image','label']),
-    t.Spacingd(keys=['image','label'],pixdim=pixdim, mode=("bilinear", "nearest"),),
-    t.Orientationd(keys=["image", "label"], axcodes=axcodes),
-    # t.Resized(keys=["image","label"], spatial_size=val_resize)
-    t.CropForegroundd(keys=["image", "label"], source_key="image"), # might cause validation dataset to be different
-    # crop the center region
-    # t.CenterSpatialCropd(keys=["image","label"], roi_size=patch_size),
-    # scale label value
-    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-    *label_transformations,
-    t.ToTensord(keys=["image","label"]),
-    t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
-  ])
-  return train_transforms, val_transforms
 
 #%% DataModule class template
-class DataModule(pl.LightningDataModule):
+class DataModule_template(pl.LightningDataModule):
   def __init__(self):
     # define required parameters here
     return
@@ -103,12 +38,12 @@ class DataModule(pl.LightningDataModule):
         
 #%% DataModule class
 
-class DataModuleWMH(pl.LightningDataModule):
-  def __init__(self, image_paths, label_paths=None,  label_transformations=[], pixdim=(1.0, 1.0, 1.2), patch_size=(96, 96, 96), axcodes="RAS", batch_size_train=32, batch_size_val=1, dataset_type="PersistentDataset", num_workers=None, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
+class DataModule(pl.LightningDataModule):
+  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, batch_size_train=32, batch_size_val=1, dataset_type='CacheDataset', num_workers=None, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
     '''
     - label_paths can be None to facilitate test dataloader
     - train_files, val_files [data_dict]: {"image": str(image_name), "label": str(label_name)}
-    - dataset_type = CacheDataset (better for debugging) PersistentDataset (better for deloy, cannot reflect changes during development after been initialized and cached)
+    - dataset_type = CacheDataset (better for debugging); PersistentDataset (better for deloy, cannot reflect changes during development after been initialized and cached)
     ------
     - Example of setting up data path:
       ```python
@@ -137,7 +72,7 @@ class DataModuleWMH(pl.LightningDataModule):
     self.download_dir = tmp_dir
     self.batch_size_train = batch_size_train
     self.batch_size_val = batch_size_val
-    self.train_transforms, self.val_transforms = transforms(pixdim=pixdim, patch_size=patch_size, axcodes=axcodes, label_transformations=label_transformations)
+    self.train_transforms, self.val_transforms = train_transforms, val_transforms
     if num_workers_cache is None: num_workers_cache = os.cpu_count()
     if num_workers is None: num_workers =  os.cpu_count()
     self.num_workers_cache = num_workers_cache

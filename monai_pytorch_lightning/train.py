@@ -48,7 +48,7 @@ def lightning_trainer(default_root_dir,log_dir=None, gpus=[0], auto_lr_find=True
   # > ref: https://pytorch-lightning.readthedocs.io/en/stable/common/weights_loading.html
   checkpoint_callback = ModelCheckpoint(monitor=monitor, mode=mode, verbose=verbose, dirpath=f"{default_root_dir}/checkpoints", save_top_k = save_top_k, filename = f"{exp_name}-"+"{val_dice:.4f}_{epoch}") # save top n model # {val_loss:.4f}_
 
-  early_stopping_callback = pl.callbacks.early_stopping.EarlyStopping(monitor='val_loss', patience=100)
+  early_stopping_callback = pl.callbacks.early_stopping.EarlyStopping(monitor='val_loss', patience=200)
   callbacks=[checkpoint_callback, PrintingCallbacks(),early_stopping_callback]
   # saved best checkpoint can be retrieved through: `checkpoint_callback.best_model_path`
 
@@ -171,9 +171,10 @@ def train_monai(train_ds, val_ds):
                     )
                     roi_size = (160, 160, 160)
                     sw_batch_size = 4
-                    val_outputs = sliding_window_inference(
-                        val_inputs, roi_size, sw_batch_size, model
-                    )
+                    with torch.no_grad():
+                        val_outputs = sliding_window_inference(
+                            val_inputs, roi_size, sw_batch_size, model
+                        )
                     val_outputs = post_pred(val_outputs)
                     val_labels = post_label(val_labels)
                     value = compute_meandice(

@@ -11,13 +11,19 @@
 
 
 ----- requirement.txt -----
-nipype
+nibabel
 matplotlib
 
 pytorch
 pytorch-lightning
 monai
 
+nipype
 scikit-image
 scikit-learn
 opencv
+
+----- med-deeplearning -----
+fastai
+simpleitk
+ipywidgets

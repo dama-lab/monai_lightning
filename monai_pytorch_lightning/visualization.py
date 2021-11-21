@@ -24,7 +24,8 @@ def remove_background(labelVol, bgLabel=0, **kwargs):
 def vol_peek(vol:tuple([np.array,torch.Tensor,Path,str]),
             rows=5, cols=5,
             filepath=None, fig_title=None, permute_axes=None, transpose=False, flipud=False,
-            rescale=False, threRange=None, rescaleTo=None, overlay_vol:tuple([np.array, torch.Tensor,Path,str])=None, overlay_surf=None, alpha=0.7,
+            rescale=False, threRange=None, rescaleTo=None, overlay_vol:tuple([np.array, torch.Tensor,Path,str])=None, alpha=0.7,
+            overlay_surf=None, linewidth=1, 
             volThre=None, volCmap='gray', labelCmap='jet', labelNorm=None,
             volClim=None, labelClim=None,
             sliceNo=True, figsize=16, dpi=300, aspect='auto', close_figure=False, show=True, returnType='figure', **kwargs):
@@ -147,7 +148,7 @@ def vol_peek(vol:tuple([np.array,torch.Tensor,Path,str]),
         if overlay_surf is not None:
           # [layer,width] ==transpose==> [width, layer]
           for layer in range(overlay_surf.shape[0]):
-            plt.plot(overlay_surf[layer,:,slice_no])
+            plt.plot(overlay_surf[layer,:,slice_no], linewidth=linewidth)
           # alternatively, same as: 
           # plt.plot(overlay_surf[:,:,slice_no].transpose())
 

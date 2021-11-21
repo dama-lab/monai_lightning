@@ -142,16 +142,18 @@ def cal_mean_dice(y_hat, y, include_bg=False):
   label_list = list(range(from_channel, label_no))
   return get_dice_label(y_hat, y, labels=label_list)
 
-def unet_3d(in_channels, out_channels, dimensions=3, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), num_res_units=2):
-  '''return a monai's UNet with some default parameters'''
+def unet_monai(in_channels, out_channels, dimensions=3, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), num_res_units=2, kernel_size=3):
+  '''return a monai's UNet with some default parameters
+  - for 2D: dimensions=2
+  '''
   return UNet(dimensions=dimensions,
         in_channels=in_channels,
         out_channels=out_channels,
         channels=channels,
         strides=strides,
+        kernel_size=kernel_size,
         num_res_units=num_res_units,
         norm=Norm.BATCH)
-
 
 #%% Model_WMH
 class UNet3DModule(pl.LightningModule):
@@ -161,9 +163,15 @@ class UNet3DModule(pl.LightningModule):
   '''
   def __init__(self, net, lr=1e-4, 
                loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
+               roi_size = (64, 64, 64),
                optimizer_class=torch.optim.AdamW, 
-               device=torch.device("cuda:0"), verbose=True):
-    super().__init__()
+               sw_batch_size=2,
+               device=torch.device("cuda:0"),
+               val_device='cpu', verbose=True):
+    '''
+    - roi_size: sample value
+      3D brain: (64, 64, 64)
+      2D retina: (512,512,1)
     # unet = UNet(
     #     dimensions=3,
     #     in_channels=1,
@@ -173,10 +181,17 @@ class UNet3DModule(pl.LightningModule):
     #     num_res_ units=2,
     #     norm=Norm.BATCH,
     # ).to(device)
+    
+    '''
+    super().__init__()
+    self.sw_device = device
+    self.val_device = val_device
     self._model = net.to(device)
     self.optimizer_class = optimizer_class
     self.lr = lr
     self.loss_function = loss_function # include_background=True
+    self.roi_size = roi_size
+    self.sw_batch_size = sw_batch_size
     self.post_pred = t.Compose([t.EnsureType(), t.AsDiscrete(argmax=True, to_onehot=True, n_classes=net.out_channels)])
     self.post_label = t.Compose([t.EnsureType(), t.AsDiscrete(to_onehot=True, n_classes=net.out_channels)])
     self.dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False) # `get_not_nans=True` will return a second value
@@ -209,11 +224,9 @@ class UNet3DModule(pl.LightningModule):
   def validation_step(self, batch, batch_idx):
       '''implementation from monai'''
       images, labels = batch["image"], batch["label"]
-      roi_size = (64, 64, 64)
-      sw_batch_size = 2
-      outputs = sliding_window_inference(
-          images, roi_size, sw_batch_size, predictor=self.forward)
-      loss = self.loss_function(outputs, labels)
+      with torch.no_grad():
+        outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device)
+      loss = self.loss_function(outputs.to(self.val_device), labels.to(self.val_device))
       
       outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
       labels = [self.post_label(i) for i in decollate_batch(labels)]
@@ -303,3 +316,44 @@ class UNet3DModule(pl.LightningModule):
     return {"log": logs}
 
 # %%
+class UNet2DModule(UNet3DModule):
+  def __init__(self, net, lr=1e-4, 
+               loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
+               roi_size = (512, 512, 1),
+               optimizer_class=torch.optim.AdamW, 
+               device=torch.device("cuda:0"),
+               val_device='cpu',
+               sw_batch_size=2,
+               verbose=True):
+    ''' 
+    - val_device: device to store the whole validation data to be feed into the sliding_window_inference on "device" (default is 'cpu')
+    '''
+    super().__init__(net=net, lr=lr, loss_function=loss_function, roi_size=roi_size, optimizer_class=optimizer_class, sw_batch_size=sw_batch_size, device=device, val_device=val_device, verbose=verbose)
+
+  def forward_val(self, x):
+    '''
+    squeeze last dimension to 2D before feeding into the model
+    unsqueeze last dimension to 3D after feeding into the model
+    '''
+    return self._model(x.squeeze(-1)).unsqueeze(-1)
+
+  #%% Ref: /home/dma73/Code/medical_image_analysis/cohorts/Learning/monai/MONAI/tutorials/3d_segmentation/spleen_segmentation_3d_lightning.ipynb
+  def validation_step(self, batch, batch_idx):
+      '''implementation from monai'''
+      images = batch["image"].to(self.val_device)
+      labels = batch["label"].to(self.val_device)
+      # ensure everything is in eval() mode (i.e. no tensor grad calculation)
+      # https://github.com/Project-MONAI/MONAI/issues/1189
+      with torch.no_grad():
+        outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device).to(self.val_device)
+        # calculate losses
+        loss = self.loss_function(outputs, labels)
+        # calculate dice metrics
+        outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
+        labels = [self.post_label(i) for i in decollate_batch(labels)]
+        valid_dice = self.dice_metric(y_pred=outputs, y=labels)
+        # seems there were nan in the validation dices
+        valid_dice = valid_dice[valid_dice.isnan().logical_not()].mean()
+        # will only log mean loss/dice at "validation_epoch_end"
+        # self.outputs = outputs # for debug only
+      return {"val_loss": loss, "val_number": len(outputs), "val_dice": valid_dice}

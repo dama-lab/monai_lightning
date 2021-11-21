@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 from monai.data import DataLoader
 from pathlib import Path
 
-from monai.data import CacheDataset, PersistentDataset # , Dataset
+from monai.data import CacheDataset, PersistentDataset, Dataset
 from monai.utils.misc import set_determinism
 import monai.transforms as t
 
@@ -39,7 +39,7 @@ class DataModule_template(pl.LightningDataModule):
 #%% DataModule class
 
 class DataModule(pl.LightningDataModule):
-  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, batch_size_train=32, batch_size_val=1, dataset_type='CacheDataset', num_workers=None, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
+  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, test_transforms=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=None, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
     '''
     - label_paths can be None to facilitate test dataloader
     - train_files, val_files [data_dict]: {"image": str(image_name), "label": str(label_name)}
@@ -71,8 +71,13 @@ class DataModule(pl.LightningDataModule):
     super().__init__()
     self.download_dir = tmp_dir
     self.batch_size_train = batch_size_train
-    self.batch_size_val = batch_size_val
-    self.train_transforms, self.val_transforms = train_transforms, val_transforms
+    self.batch_size_val   = batch_size_val
+    self.batch_size_test  = batch_size_test
+    
+    self.train_transforms = train_transforms
+    self.val_transforms   = val_transforms
+    self.test_transforms   = test_transforms
+
     if num_workers_cache is None: num_workers_cache = os.cpu_count()
     if num_workers is None: num_workers =  os.cpu_count()
     self.num_workers_cache = num_workers_cache
@@ -120,7 +125,10 @@ class DataModule(pl.LightningDataModule):
     return DataLoader(self.valid_data, batch_size=self.batch_size_val, shuffle=False, num_workers=self.num_workers, pin_memory=True) # collate_fn=self.collate_fn, 
     
   def test_dataloader(self):
-    return
+    test_data_dicts = [{"image": str(input_path)} for input_path in self.image_paths]
+    # use base Dataset class for testing
+    self.test_dataset = Dataset(test_data_dicts,transform=self.test_transforms)
+    return DataLoader(self.test_dataset, batch_size=self.batch_size_test, shuffle=False, num_workers=0)
 
 
 

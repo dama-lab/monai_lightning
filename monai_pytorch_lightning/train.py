@@ -1,16 +1,23 @@
 #%%
-import glob
+# import glob
 import os
 import argparse
-import pathlib
-import shutil
-import tempfile
+from pathlib import Path
 import time
+# import shutil
+# import tempfile
 
 import torch
+import monai.transforms as t
+from monai.data import DataLoader, Dataset, nifti_writer, write_nifti
+from monai.inferers import sliding_window_inference
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+
+# import other core library components
+import transforms, datasets, models, visualization as viz
+from HelperFunctions.data_proc import oct_proc
 
 
 #%% %%%%%%%% Lightning %%%%%%%%
@@ -31,7 +38,7 @@ class PrintingCallbacks(Callback):
     print("Training is done.")
 
 #%% train from lightning
-def lightning_trainer(default_root_dir,log_dir=None, gpus=[0], auto_lr_find=True, accelerator='dp',max_epochs=600, log_every_n_steps=50, flush_logs_every_n_steps=100, csv_log_name="csv_log", tb_log_name="tensorboard", monitor='val_loss', mode="min", save_top_k=1, exp_name="", verbose=True):
+def lightning_trainer(default_root_dir,log_dir=None, gpus=[0], auto_lr_find='lr', accelerator='dp',max_epochs=600, log_every_n_steps=50, flush_logs_every_n_steps=100, csv_log_name="csv_log", tb_log_name="tensorboard", monitor='val_loss', mode="min", save_top_k=1, exp_name="", verbose=True):
   '''
   model: lightning module
   data:  lightning data module
@@ -66,6 +73,178 @@ def lightning_trainer(default_root_dir,log_dir=None, gpus=[0], auto_lr_find=True
                       logger=[csv_logger, tb_logger])
 
   return trainer
+
+class segmentation_pipeline():
+  def __init__(self, default_root_dir,
+              mode='inference',
+              dimensions = 2,
+              patch_size = (480,480,1),
+              sw_batch_size = 256,
+              device = "cuda",
+              val_device = 'cpu',
+              ):
+    '''The main segmentation engine to perform the segmentation training/inference pipeline
+    - mode = train/inference
+    - image_paths, label_paths = get_image_label_paths()
+    '''
+    self.mode = mode
+    self.dimensions = dimensions
+    self.patch_size = patch_size
+    self.default_root_dir = default_root_dir
+    self.sw_batch_size = sw_batch_size
+    self.device = device
+    self.val_device = val_device
+
+    if self.dimensions == 2:
+      self.module = models.UNet2DModule
+    elif self.dimensions == 3:
+      self.module = models.UNet3DModule
+    # end of __init__ function
+    
+  # %% common method steps for both training / inference
+  # %% create model
+  def create_model(self, out_channels, in_channels=1, num_res_units=2, lr=1e-3):
+    '''create: self.net / self.model'''
+    # define network architecture
+    self.net = models.unet_monai(dimensions=self.dimensions, in_channels=in_channels, out_channels=out_channels, num_res_units=num_res_units)
+    # define model
+    self.model = self.module(net=self.net, lr=lr, roi_size=self.patch_size, sw_batch_size=self.sw_batch_size, device=self.device, val_device=self.val_device)
+
+  # %% create data module
+  def create_data(self, image_paths, label_paths=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=0, num_workers_cache=0, pixdim=(1.0, 1.0, 1.2),axcodes="RAS", rotate90_spatial_axes=(0,1), rotate90_k=3, label_transformations=[]):
+    ''' create data module'''
+    # create transform
+    if self.dimensions == 2:
+      self.train_transforms, self.val_transforms, self.test_transforms = transforms.transforms_2d(patch_size=self.patch_size, rotate90_spatial_axes=rotate90_spatial_axes, rotate90_k=rotate90_k)
+    elif dimensions == 3:
+      self.train_transforms, self.val_transforms, self.test_transforms = transforms.transforms_3d(pixdim=pixdim, patch_size=self.patch_size, axcodes=axcodes, label_transformations=label_transformations)
+    
+    # Create data
+    self.data = datasets.DataModule(image_paths=image_paths, label_paths=label_paths, train_transforms=self.train_transforms, val_transforms=self.val_transforms, test_transforms=self.test_transforms, batch_size_train=batch_size_train, batch_size_val=batch_size_val, batch_size_test=batch_size_test, dataset_type=dataset_type, num_workers=num_workers, num_workers_cache=num_workers_cache)
+    
+    if self.mode == 'train':  
+      self.data.setup(val_idx=val_idx)
+    # elif self.mode == 'inference':
+    #   test_dataloader = self.data.test_dataloader()
+
+  # %% training specific blocks (data_module, trainer)    
+  def train(self, exp_name, max_epochs=1000, monitor='val_dice', mode='max', save_top_k=1, find_lr=True, fit=True):
+    if self.mode != 'train':
+      print("self.mode not in 'train' mode"); return
+
+    # create lightning trainer
+    trainer = train.lightning_trainer(default_root_dir=self.default_root_dir, 
+                                      log_dir=f"{self.default_root_dir}/logs/{exp_name}",
+                                      auto_lr_find='lr',
+                                      max_epochs=max_epochs, 
+                                      exp_name=exp_name, 
+                                      monitor=monitor,
+                                      mode=mode,
+                                      save_top_k=save_top_k)
+    # find the best learning rate
+    # Ref: https://pytorch-lightning.readthedocs.io/en/latest/advanced/lr_finder.html
+    if find_lr == True:
+      print("lr before auto_lr_find: ", self.model.lr)
+      lr_finder = trainer.tuner.lr_find(self.model, self.data)
+      fig = lr_finder.plot(suggest=True) # plot
+      fig.show()
+      print("suggested learning rate: ", lr_finder.suggestion())
+      self.model.hparams.learning_rate = lr_finder.suggestion()
+      # alternatively:
+      # trainer.tune(model, data)
+      print("lr after auto_lr_find: ", self.model.lr)
+
+    # %% Start training with learning rate = {lr}
+    if fit == True:
+      print(f'  >>> Start training with learning rate = {self.model.lr}...')
+      trainer.fit(self.model, self.data)
+
+  def inference(self, ckpt_path,
+                seg_dir = None,
+                qc_dir  = None,
+                ext_len = -1,
+                qc_seg  = True,
+                qc_surf = False,
+                flipud  = True,
+                permute = [1,0,2],
+                strict  = False,
+                ):
+    '''inference
+    - ext_len: -1=.nii, -2=.nii.gz
+    - strict:  whether to load the weight key name in strict mode
+    '''
+    # %% load model checkpoints from
+    self.model.load_from_checkpoint(checkpoint_path=ckpt_path, net=self.net, map_location=self.device, strict=strict, verbose=True);
+
+
+    if seg_dir == None:
+      seg_dir = f"{self.default_root_dir}/seg"
+    if qc_dir == None:
+      qc_dir = f"{self.default_root_dir}/quiqkcheck"
+
+    Path(seg_dir).mkdir(exist_ok=True, parents=True)
+
+    test_dataloader = self.data.test_dataloader()
+    
+    # %% start inference
+    for i, test_batch in enumerate(test_dataloader):
+      img = test_batch['image'] #.to(val_device) # 'cpu'
+      img_path = test_batch['image_meta_dict']['filename_or_obj'][0]
+      fname = os.path.basename(img_path)
+      scan_name = '_'.join(fname.split('.')[:ext_len])
+      seg_path = f"{seg_dir}/{scan_name}.nii.gz"
+
+      print(f"{i}/{len(test_dataloader)}: {scan_name}")
+
+      if os.path.isfile(seg_path):
+        print(f"--- segmentation file exits, skipping ... `{seg_path}`")
+      # run Inference
+      with torch.no_grad():
+        # run sliding window inference
+        print("--- running sliding_window_inference ...")
+        test_outputs = sliding_window_inference(inputs=img, roi_size=self.patch_size, sw_batch_size=self.sw_batch_size, predictor=self.model.to('cuda').forward_val, overlap=0.1, sw_device="cuda",device="cpu")
+
+        # convert segmentation
+        seg = test_outputs.argmax(dim=1).squeeze()
+        if flipud == True:
+          seg = seg.flipud()
+        if permute is not None:
+          seg = seg.permute(permute)
+        seg = seg.cpu().numpy()
+      
+      # save auto-seg resutls
+      if not os.path.isfile(seg_path):
+        print("--- Saving segmentation ...")
+        write_nifti(seg, file_name=seg_path)
+
+      # save seg quickcheck
+      if qc_seg is True:
+        qc_seg_dir = f"{qc_dir}/seg"
+        Path(qc_seg_dir).mkdir(exist_ok=True, parents=True)
+
+        qc_seg_path = f"{qc_seg_dir}/{scan_name}.png"
+        if not os.path.isfile(qc_seg_path):
+          print("---Saving seg quickcheck ...")
+          vol = img.detach().cpu().squeeze()
+          # seg = seg.detach().cpu()
+          fig = viz.vol_peek(vol=vol, overlay_vol=seg, filepath=qc_seg_path, fig_title=scan_name, show=False, close_figure=True) 
+
+      # save retina-specific qc:
+      if qc_surf == True:
+        qc_surf_dir = f"{qc_dir}/surf"
+        Path(qc_surf_dir).mkdir(exist_ok=True, parents=True)
+
+        qc_surf_path  = f"{qc_surf_dir}/{scan_name}.png"
+        # save quickcheck surface results
+        if not os.path.isfile(qc_surf_path):
+          print("---Saving layer surface ...")
+          vol = img.detach().cpu().squeeze()
+          surf = oct_proc.vol2surf(seg)
+          fig = viz.vol_peek(vol, overlay_surf=surf, linewidth=0.5, filepath=qc_surf_path, show=True, close_figure=True)
+  
+    # return the last segmentation output (for debugging)
+    return img, seg
+
 
 #%% train_lightning
 def setup_options(input_args=None):

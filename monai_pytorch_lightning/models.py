@@ -164,7 +164,8 @@ class UNet3DModule(pl.LightningModule):
   def __init__(self, net, lr=1e-4, 
                loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
                roi_size = (64, 64, 64),
-               optimizer_class=torch.optim.AdamW, 
+               optimizer_class=torch.optim.AdamW,
+               automatic_optimization = True,
                sw_batch_size=2,
                device=torch.device("cuda:0"),
                val_device='cpu', verbose=True):
@@ -172,6 +173,8 @@ class UNet3DModule(pl.LightningModule):
     - roi_size: sample value
       3D brain: (64, 64, 64)
       2D retina: (512,512,1)
+    - automatic_optimization:
+      two options: 1. automatic; 2. manual
     # unet = UNet(
     #     dimensions=3,
     #     in_channels=1,
@@ -198,13 +201,44 @@ class UNet3DModule(pl.LightningModule):
     self.best_val_dice = 0
     self.best_val_epoch = 0
     self.verbose = verbose
+    # for learning rate schedular
+    # https://pytorch-lightning.readthedocs.io/en/latest/common/optimizers.html#learning-rate-scheduling
+    self.automatic_optimization = automatic_optimization
     
   def forward(self, x):
     return self._model(x)
 
+  def forward_val(self, x):
+    '''
+    - for 3D: the same as 2D
+    - for 2D: need to customize the design
+    '''
+    return self._model(x)
+
   def configure_optimizers(self):
+    '''Choose what optimizers and learning-rate schedulers to use in your optimization. Normally you’d need one. But in the case of GANs or similar you might have multiple.
+    Any of these 6 options. (I'm currently using the "Two lists" option)
+    - Single optimizer.
+    - List or Tuple of optimizers.
+    - Two lists - The first list has multiple optimizers, and the second has multiple LR schedulers (or multiple lr_scheduler_config).
+    - Dictionary, with an "optimizer" key, and (optionally) a "lr_scheduler" key whose value is a single LR scheduler or lr_scheduler_config.
+    - Tuple of dictionaries as described above, with an optional "frequency" key.
+    - None - Fit will run without any optimizer.
+    Ref: https://pytorch-lightning.readthedocs.io/en/latest/api/pytorch_lightning.core.lightning.html#pytorch_lightning.core.lightning.LightningModule.configure_optimizers'''
+    # optimizer
+    optimizer = self.optimizer_class(self.parameters(),lr=self.lr)
+  
+    # lr_schesuler
+    schedular_reduceonplateau = {
+      "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer),
+      "monitor":   'val_loss',
+      "frequency": 1,
+      } # frequency: how often n epochs
+
+    optimizers = [optimizer]
+    lr_schedulers = [ schedular_reduceonplateau ]
+    return optimizers, lr_schedulers
     # return torch.optim.SGD(self.parameters(),lr=self.lr)
-    return self.optimizer_class(self.parameters(),lr=self.lr)
 
   def training_step(self, train_batch, batch_idx):
     images, labels = train_batch["image"], train_batch["label"] #.to(device)
@@ -219,23 +253,37 @@ class UNet3DModule(pl.LightningModule):
     
     return {'loss': loss} # , 'train_accuracy': train_acc
 
-
-  #%% Ref: /home/dma73/Code/medical_image_analysis/cohorts/Learning/monai/MONAI/tutorials/3d_segmentation/spleen_segmentation_3d_lightning.ipynb
   def validation_step(self, batch, batch_idx):
-      '''implementation from monai'''
-      images, labels = batch["image"], batch["label"]
-      with torch.no_grad():
-        outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device)
-      loss = self.loss_function(outputs.to(self.val_device), labels.to(self.val_device))
+      '''implementation from monai
+      Ref: /home/dma73/Code/medical_image_analysis/cohorts/Learning/monai/MONAI/tutorials/3d_segmentation/spleen_segmentation_3d_lightning.ipynb
+      '''
+      images = batch["image"].to(self.val_device)
+      labels = batch["label"].to(self.val_device)
       
-      outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
-      labels = [self.post_label(i) for i in decollate_batch(labels)]
-      valid_dice = self.dice_metric(y_pred=outputs, y=labels)
-      # seems there were nan in the validation dices
-      valid_dice = valid_dice[valid_dice.isnan().logical_not()].mean()
+      with torch.no_grad():
+        outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device).to(self.val_device)
+        # calculate losses
+        loss = self.loss_function(outputs, labels)
+        # calculate metrics
+        outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
+        labels = [self.post_label(i) for i in decollate_batch(labels)]
+        valid_dice = self.dice_metric(y_pred=outputs, y=labels)
+        # seems there were nan in the validation dices
+        valid_dice = valid_dice[valid_dice.isnan().logical_not()].mean()
       # will only log mean loss/dice at "validation_epoch_end"
       # self.outputs = outputs # for debug only
       return {"val_loss": loss, "val_number": len(outputs), "val_dice": valid_dice}
+
+  def training_epoch_end(self, outputs):
+    ''' Learning rate scheduling for reduceonplatue [manual]
+    (probably duplicated with: `configure_optimizers`)
+    Ref: https://pytorch-lightning.readthedocs.io/en/latest/common/optimizers.html#learning-rate-scheduling-manual
+    '''
+    sch = self.lr_schedulers()
+    if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+      sch.step(self.trainer.callback_metrics['val_loss'])
+
+
 
   def validation_epoch_end(self, outputs):
     ''' postprocessing validation step output (MONAI's implementation)
@@ -337,23 +385,23 @@ class UNet2DModule(UNet3DModule):
     '''
     return self._model(x.squeeze(-1)).unsqueeze(-1)
 
-  #%% Ref: /home/dma73/Code/medical_image_analysis/cohorts/Learning/monai/MONAI/tutorials/3d_segmentation/spleen_segmentation_3d_lightning.ipynb
-  def validation_step(self, batch, batch_idx):
-      '''implementation from monai'''
-      images = batch["image"].to(self.val_device)
-      labels = batch["label"].to(self.val_device)
-      # ensure everything is in eval() mode (i.e. no tensor grad calculation)
-      # https://github.com/Project-MONAI/MONAI/issues/1189
-      with torch.no_grad():
-        outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device).to(self.val_device)
-        # calculate losses
-        loss = self.loss_function(outputs, labels)
-        # calculate dice metrics
-        outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
-        labels = [self.post_label(i) for i in decollate_batch(labels)]
-        valid_dice = self.dice_metric(y_pred=outputs, y=labels)
-        # seems there were nan in the validation dices
-        valid_dice = valid_dice[valid_dice.isnan().logical_not()].mean()
-        # will only log mean loss/dice at "validation_epoch_end"
-        # self.outputs = outputs # for debug only
-      return {"val_loss": loss, "val_number": len(outputs), "val_dice": valid_dice}
+  # #%% Ref: /home/dma73/Code/medical_image_analysis/cohorts/Learning/monai/MONAI/tutorials/3d_segmentation/spleen_segmentation_3d_lightning.ipynb
+  # def validation_step(self, batch, batch_idx):
+  #     '''implementation from monai'''
+  #     images = batch["image"].to(self.val_device)
+  #     labels = batch["label"].to(self.val_device)
+  #     # ensure everything is in eval() mode (i.e. no tensor grad calculation)
+  #     # https://github.com/Project-MONAI/MONAI/issues/1189
+  #     with torch.no_grad():
+  #       outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device).to(self.val_device)
+  #       # calculate losses
+  #       loss = self.loss_function(outputs, labels)
+  #       # calculate dice metrics
+  #       outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
+  #       labels = [self.post_label(i) for i in decollate_batch(labels)]
+  #       valid_dice = self.dice_metric(y_pred=outputs, y=labels)
+  #       # seems there were nan in the validation dices
+  #       valid_dice = valid_dice[valid_dice.isnan().logical_not()].mean()
+  #       # will only log mean loss/dice at "validation_epoch_end"
+  #       # self.outputs = outputs # for debug only
+  #     return {"val_loss": loss, "val_number": len(outputs), "val_dice": valid_dice}

@@ -3,7 +3,7 @@ import os, sys
 from monai.data.utils import pad_list_data_collate # , list_data_collate
 import pytorch_lightning as pl
 
-from monai.data import DataLoader
+from monai.data import ThreadDataLoader # , DataLoader
 from pathlib import Path
 
 from monai.data import CacheDataset, PersistentDataset, Dataset
@@ -39,7 +39,7 @@ class DataModule_template(pl.LightningDataModule):
 #%% DataModule class
 
 class DataModule(pl.LightningDataModule):
-  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, test_transforms=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=None, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
+  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, test_transforms=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=0, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
     '''
     - label_paths can be None to facilitate test dataloader
     - train_files, val_files [data_dict]: {"image": str(image_name), "label": str(label_name)}
@@ -105,10 +105,13 @@ class DataModule(pl.LightningDataModule):
     self.train_files, self.val_files = self.data_dicts[:val_idx], self.data_dicts[val_idx:]
 
     if self.dataset_type == "CacheDataset":
+      # as `RandCropByPosNegLabeld` crops from the cached content and `deepcopy`, the crop area instead of modifying the cached value, we can set `copy_cache=False`, to avoid unnecessary deepcopy of cached content in `CacheDataset`
+      # Ref: https://github.com/Project-MONAI/tutorials/blob/master/acceleration/fast_training_tutorial.ipynb
+      
       # training data
-      self.train_data = CacheDataset(data=self.train_files, transform=self.train_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate)
+      self.train_data = CacheDataset(data=self.train_files, transform=self.train_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate, copy_cache=False,)
       # validation data
-      self.valid_data = CacheDataset(data=self.val_files, transform=self.val_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate)
+      self.valid_data = CacheDataset(data=self.val_files, transform=self.val_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate, copy_cache=False,)
     elif self.dataset_type == "PersistentDataset":
       # (for final production)
       # training data
@@ -118,17 +121,19 @@ class DataModule(pl.LightningDataModule):
 
     # self.test_data not yet defined
 
+  # ThreadDataLoader: uses multi-threads instead of multi-processing, faster than DataLoader in light-weight task as we already cached the results of most computation.
+  # disable multi-workers because `ThreadDataLoader` works with multi-threads
   def train_dataloader(self):
-    return DataLoader(self.train_data, batch_size=self.batch_size_train, shuffle=True, num_workers=self.num_workers) # collate_fn=self.collate_fn, 
+    return ThreadDataLoader(self.train_data, batch_size=self.batch_size_train, shuffle=True, num_workers=self.num_workers) # collate_fn=self.collate_fn, 
     
   def val_dataloader(self):
-    return DataLoader(self.valid_data, batch_size=self.batch_size_val, shuffle=False, num_workers=self.num_workers, pin_memory=True) # collate_fn=self.collate_fn, 
+    return ThreadDataLoader(self.valid_data, batch_size=self.batch_size_val, shuffle=False, num_workers=self.num_workers, pin_memory=True) # collate_fn=self.collate_fn, 
     
   def test_dataloader(self):
-    test_data_dicts = [{"image": str(input_path)} for input_path in self.image_paths]
+    self.test_data_dicts = [{"image": str(input_path)} for input_path in self.image_paths]
     # use base Dataset class for testing
-    self.test_dataset = Dataset(test_data_dicts,transform=self.test_transforms)
-    return DataLoader(self.test_dataset, batch_size=self.batch_size_test, shuffle=False, num_workers=0)
+    self.test_data = Dataset(self.test_data_dicts,transform=self.test_transforms)
+    return ThreadDataLoader(self.test_data, batch_size=self.batch_size_test, shuffle=False, num_workers=0)
 
 
 

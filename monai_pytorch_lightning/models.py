@@ -163,9 +163,8 @@ class UNet3DModule(pl.LightningModule):
   '''
   def __init__(self, net, lr=1e-4, 
                loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
+               optimizer_class=monai.optimizers.Novograd,
                roi_size = (64, 64, 64),
-               optimizer_class=torch.optim.AdamW,
-               automatic_optimization = True,
                sw_batch_size=2,
                device=torch.device("cuda:0"),
                val_device='cpu', verbose=True):
@@ -173,8 +172,10 @@ class UNet3DModule(pl.LightningModule):
     - roi_size: sample value
       3D brain: (64, 64, 64)
       2D retina: (512,512,1)
-    - automatic_optimization:
-      two options: 1. automatic; 2. manual
+    - val_device: device to store the whole validation data to be feed into the sliding_window_inference on "device" (default is 'cpu')
+    - optimizer_class: torch.optim.Adam, torch.optim.AdamW, monai.optimizers.Novograd
+      - automatic_optimization:
+        two options: 1. automatic; 2. manual
     # unet = UNet(
     #     dimensions=3,
     #     in_channels=1,
@@ -201,9 +202,6 @@ class UNet3DModule(pl.LightningModule):
     self.best_val_dice = 0
     self.best_val_epoch = 0
     self.verbose = verbose
-    # for learning rate schedular
-    # https://pytorch-lightning.readthedocs.io/en/latest/common/optimizers.html#learning-rate-scheduling
-    self.automatic_optimization = automatic_optimization
     
   def forward(self, x):
     return self._model(x)
@@ -224,7 +222,9 @@ class UNet3DModule(pl.LightningModule):
     - Dictionary, with an "optimizer" key, and (optionally) a "lr_scheduler" key whose value is a single LR scheduler or lr_scheduler_config.
     - Tuple of dictionaries as described above, with an optional "frequency" key.
     - None - Fit will run without any optimizer.
-    Ref: https://pytorch-lightning.readthedocs.io/en/latest/api/pytorch_lightning.core.lightning.html#pytorch_lightning.core.lightning.LightningModule.configure_optimizers'''
+    Ref: https://pytorch-lightning.readthedocs.io/en/latest/api/pytorch_lightning.core.lightning.html#pytorch_lightning.core.lightning.LightningModule.configure_optimizers
+    - for learning rate schedular
+    # https://pytorch-lightning.readthedocs.io/en/latest/common/optimizers.html#learning-rate-scheduling'''
     # optimizer
     optimizer = self.optimizer_class(self.parameters(),lr=self.lr)
   
@@ -375,6 +375,7 @@ class UNet2DModule(UNet3DModule):
                verbose=True):
     ''' 
     - val_device: device to store the whole validation data to be feed into the sliding_window_inference on "device" (default is 'cpu')
+    - optimizer_class: torch.optim.Adam, torch.optim.AdamW, 
     '''
     super().__init__(net=net, lr=lr, loss_function=loss_function, roi_size=roi_size, optimizer_class=optimizer_class, sw_batch_size=sw_batch_size, device=device, val_device=val_device, verbose=verbose)
 

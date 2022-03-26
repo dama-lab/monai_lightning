@@ -204,33 +204,45 @@ def transforms_3d(pixdim=(1.0, 1.0, 1.2), patch_size=(96, 96, 96), axcodes="RAS"
   return train_transforms, val_transforms, test_transforms
 
 # %% for 2D convolutional neural network
-def transforms_2d(patch_size=(512,512,1), rotate90_spatial_axes=(0,1), rotate90_k=3, crop_forground_source_key="label", crop_forground_select_fn=None, label_transformations=[]):
+def transforms_2d(patch_size=(512,512,1), crop_forground_source_key="label", crop_forground_select_fn=None, label_transformations=[],additional_deterministic_transforms=[], additional_random_transforms=[]):
   '''
   setup transforms
   '''
 # %% === deterministic ===
-  def set_deterministic_transforms(keys=["image","label"], rotate90_spatial_axes=rotate90_spatial_axes, rotate90_k=rotate90_k, crop_forground_source_key=crop_forground_source_key, crop_forground_select_fn=crop_forground_select_fn):
+  def set_deterministic_transforms(keys=["image","label"],  crop_forground_source_key=crop_forground_source_key, crop_forground_select_fn=crop_forground_select_fn):
     '''setup deterministic transforms
     rotate90_k: time to perform rotate90
     '''
+    # transpose = rotate 90 + flip
     deterministic_transforms = [
       t.LoadImaged(keys=keys),
       t.AddChanneld(keys=keys),
+      t.Rotate90d(keys=keys, k=1, spatial_axes=(0,1),), # rotate 90 anti-clockwise
+      t.Flipd(keys=keys, spatial_axis=1,),  # flip left/right
+      *additional_deterministic_transforms,
       *label_transformations,
     ]
-    # add rotate if necessary
-    if rotate90_spatial_axes is not None:
-      deterministic_transforms.append(
-        t.Rotate90d(keys=keys, k=rotate90_k, spatial_axes=rotate90_spatial_axes,)
-        )
+    # select only the forground region
     if crop_forground_select_fn is not None:
       deterministic_transforms.append(
-        t.CropForegroundd(keys=keys, source_key=crop_forground_source_key, select_fn=crop_forground_select_fn)
+        t.CropForegroundd(keys=keys, source_key=crop_forground_source_key, select_fn=crop_forground_select_fn),
       ) # select_retinal_region
+    # pre-compute foreground and background indexes and cache them to accelerate training # https://github.com/Project-MONAI/tutorials/blob/master/acceleration/fast_training_tutorial.ipynb
+    if "label" in keys:
+      deterministic_transforms.append(
+        t.FgBgToIndicesd(
+          keys="label",
+          fg_postfix="_fg",
+          bg_postfix="_bg",
+          image_key="image",
+          ),
+        )
+    # normalize intensity
     deterministic_transforms.append(t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),)
     return deterministic_transforms
     
   # === random transform ===
+  # Randomly crop out patch samples from big image based on pos / neg ratio.# The image centers of negative samples must be in valid image area
   random_transform = [
     t.RandCropByPosNegLabeld(
       keys=["image","label"],
@@ -238,18 +250,21 @@ def transforms_2d(patch_size=(512,512,1), rotate90_spatial_axes=(0,1), rotate90_
       spatial_size=patch_size,
       pos=1,
       neg=1,
-      num_samples=4,),
+      num_samples=4,
+      fg_indices_key="label_fg",
+      bg_indices_key="label_bg",),
     t.SqueezeDimd(keys=["image","label"],dim=-1),
-    t.RandScaleIntensityd(keys='image', factors=0.1, prob=0.5),
-    t.RandShiftIntensityd(keys='image', offsets=0.1, prob=0.5),
+    t.RandScaleIntensityd(keys='image', factors=0.25, prob=0.5),
+    t.RandShiftIntensityd(keys='image', offsets=0.25, prob=0.5),
     t.RandAffined(
       keys=["image","label"],
       mode=("bilinear","nearest"),
       prob=0.5,
       spatial_size=patch_size[:2],
-      rotate_range=(0,),
+      rotate_range=(0.05,),
       scale_range=(0.1,0.1),
       ),
+    *additional_random_transforms,
   ]
 
   # ===== train transform =====

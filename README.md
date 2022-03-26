@@ -13,6 +13,7 @@
 ----- requirement.txt -----
 nibabel
 matplotlib
+seaborn
 
 pytorch
 pytorch-lightning
@@ -23,7 +24,10 @@ scikit-image
 scikit-learn
 opencv
 
+torchinfo
+
 ----- med-deeplearning -----
-fastai
+fastai (dangeous, will change torch to cpu version if not careful)
 simpleitk
 ipywidgets
+albumentations

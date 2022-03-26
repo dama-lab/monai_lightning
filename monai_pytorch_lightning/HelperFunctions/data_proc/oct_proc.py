@@ -33,14 +33,14 @@ def surf2label(surf, vol, label_type="patch", axial=0, lateral=1, depth=2, verbo
     # break 
   return label
 
-def vol2surf(vol):
-  volSeg = np.array(vol)
+def layer2surf(seg):
+  volSeg = np.array(seg)
   layerIds = np.unique(volSeg)
   surfs = np.empty([0,*(volSeg.shape[1:])])
   for layer in layerIds:
-    # skip background (label == 0 or np.nan)
+    # skip first layer
     if (layer == 0) or (layer == np.nan): continue
-    surf = np.expand_dims(np.argmax(volSeg==layer-1,axis=0),axis=0)
+    surf = np.expand_dims(np.argmax(volSeg==layer,axis=0),axis=0)
     # if lower surf become above the higher surf, put it one voxel below the above
     if 'surf_previous' in vars():
       swap_idx = (surf<=surf_previous)

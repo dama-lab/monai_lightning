@@ -2,6 +2,8 @@
 from typing import Any, Dict, Hashable, Mapping, Optional, Sequence, Tuple, Union
 import yaml
 from monai.data import NiftiSaver
+# from torch.utils.data  import Dataset, DataLoader
+from monai.data import Dataset, DataLoader
 # from monai.config import DtypeLike, KeysCollection, NdarrayTensor
 # import monai.transforms as t
 # from monai.transforms.spatial.dictionary import *
@@ -103,3 +105,26 @@ def cal_dice(source, target, label=1):
   dice = 2. * intersect / union
   
   return dice
+
+# =============== poke/peek network architecture details ====================
+#%% check parameter size
+def print_param_size(net):
+  # check parameter size
+  print("=== parameter size ===")
+  for p in net.parameters():
+      print(list(p.shape))
+
+#%% check network layerwise feature size
+def print_layerwise_feature_size(net, X, batch_size=50):
+    # from IPython.display import display, Markdown, Latex
+    print("=== feature size ===")
+    if isinstance(X, Dataset):
+      X = DataLoader(X, batch_size=batch_size)
+    if isinstance(X, DataLoader):
+      X, _ = next(iter(X))
+    if isinstance(X, torch.Tensor) and len(X.shape) < 1:
+      X = x.reshape(1,-1)
+    for layer in net:
+        X = layer(X)
+        print(f"{layer.__class__.__name__:<8} \t output shape: \t {list(X.shape)}")
+        # display(Markdown(f"**{layer.__class__.__name__}** output shape: \t {X.shape}"))

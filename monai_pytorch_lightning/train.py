@@ -138,7 +138,7 @@ class segmentation_pipeline():
     #   test_dataloader = self.data.test_dataloader()
 
   # %% training specific blocks (data_module, trainer)    
-  def train(self, exp_name, val_idx=-1, max_epochs=1000, monitor='val_dice', mode='max', save_top_k=1, patience=100, find_lr=True, fit=True):
+  def train(self, exp_name, val_idx=-1, max_epochs=1000, monitor='val_dice', mode='max', save_top_k=1, patience=10, find_lr=True, fit=True):
     # if self.mode != 'train':
     #   print("self.mode not in 'train' mode"); return
     # setup the data

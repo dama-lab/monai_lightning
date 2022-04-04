@@ -9,6 +9,7 @@ import time
 
 import torch
 import monai
+from monai.losses import DiceLoss, DiceCELoss
 import monai.transforms as t
 from monai.data import DataLoader, Dataset, nifti_writer, write_nifti
 from monai.inferers import sliding_window_inference
@@ -17,7 +18,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 
 # import other core library components
-import transforms, datasets, models, train, visualization as viz
+import transforms, datasets, models, visualization as viz
 from HelperFunctions.data_proc import oct_proc
 
 # %% To-do
@@ -106,15 +107,15 @@ class segmentation_pipeline():
     
   # %% common method steps for both training / inference
   # %% create model
-  def create_model(self, out_channels, in_channels=1, num_res_units=2, lr=1e-3, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), optimizer_class=monai.optimizers.Novograd):
+  def create_model(self, out_channels, in_channels=1, num_res_units=2, lr=1e-3, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), loss_function=monai.losses.DiceCELoss, label_class_weight=None, optimizer_class=monai.optimizers.Novograd):
     '''create: self.net / self.model'''
     # define network architecture
     self.net = models.unet_monai(dimensions=self.dimensions, in_channels=in_channels, out_channels=out_channels, num_res_units=num_res_units, channels=channels, strides=strides)
     # define model
-    self.model = self.module(net=self.net, lr=lr, optimizer_class=optimizer_class, roi_size=self.patch_size, sw_batch_size=self.sw_batch_size, device=self.device, val_device=self.val_device)
+    self.model = self.module(net=self.net, lr=lr, optimizer_class=optimizer_class, roi_size=self.patch_size, sw_batch_size=self.sw_batch_size, device=self.device, val_device=self.val_device, loss_function=loss_function, label_class_weight=label_class_weight)
 
   # %% create data module
-  def create_data(self, image_paths, label_paths=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=0, num_workers_cache=0, pixdim=(1.0, 1.0, 1.2), axcodes="RAS", label_transformations=[], crop_forground_select_fn=None):
+  def create_data(self, image_paths, label_paths=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', cache_rate=1.0, num_workers=0, num_workers_cache=0, pixdim=(1.0, 1.0, 1.2), axcodes="RAS", label_transformations=[], crop_forground_select_fn=None):
     ''' create data module'''
     # create transform
     if self.dimensions == 2:
@@ -129,7 +130,7 @@ class segmentation_pipeline():
       label_paths = [label_paths]
 
     # Create data
-    self.data = datasets.DataModule(image_paths=image_paths, label_paths=label_paths, train_transforms=self.train_transforms, val_transforms=self.val_transforms, test_transforms=self.test_transforms, batch_size_train=batch_size_train, batch_size_val=batch_size_val, batch_size_test=batch_size_test, dataset_type=dataset_type, num_workers=num_workers, num_workers_cache=num_workers_cache)
+    self.data = datasets.DataModule(image_paths=image_paths, label_paths=label_paths, train_transforms=self.train_transforms, val_transforms=self.val_transforms, test_transforms=self.test_transforms, batch_size_train=batch_size_train, batch_size_val=batch_size_val, batch_size_test=batch_size_test, dataset_type=dataset_type, cache_rate=cache_rate, num_workers=num_workers, num_workers_cache=num_workers_cache)
     
     # if self.mode == 'train':  
     #   self.data.setup(val_idx=val_idx)
@@ -146,7 +147,7 @@ class segmentation_pipeline():
 
     # create lightning trainer
     log_dir=f"{self.default_root_dir}/logs/{exp_name}"
-    trainer = train.lightning_trainer(default_root_dir=self.default_root_dir, 
+    trainer = lightning_trainer(default_root_dir=self.default_root_dir,
                                       log_dir=log_dir,
                                       auto_lr_find='lr',
                                       max_epochs=max_epochs, 
@@ -287,11 +288,11 @@ def setup_options(input_args=None):
 #%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 #%% sample training process created by monai
-def train_monai(train_ds, val_ds):
+def train_monai(train_ds, val_ds, loss_function=DiceCELoss(to_onehot_y=True, softmax=True)):
     
     from monai.data import list_data_collate
     from monai.inferers import sliding_window_inference
-    from monai.losses import DiceLoss
+    from monai.losses import DiceLoss, DiceCELoss
     from monai.metrics import compute_meandice
     from monai.networks.layers import Norm
     from monai.networks.nets import UNet
@@ -314,7 +315,7 @@ def train_monai(train_ds, val_ds):
         num_res_units=2,
         norm=Norm.BATCH,
     ).to(device)
-    loss_function = DiceLoss(to_onehot_y=True, softmax=True)
+    loss_function = loss_function
     optimizer = torch.optim.Adam(model.parameters(), 1e-4)
     
     post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=2)

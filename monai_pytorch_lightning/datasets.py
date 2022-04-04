@@ -1,5 +1,6 @@
 # %% load libraries
 import os, sys
+import torch
 from monai.data.utils import pad_list_data_collate # , list_data_collate
 import pytorch_lightning as pl
 
@@ -39,7 +40,7 @@ class DataModule_template(pl.LightningDataModule):
 #%% DataModule class
 
 class DataModule(pl.LightningDataModule):
-  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, test_transforms=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=0, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/dma73/', collate_fn=pad_list_data_collate):
+  def __init__(self, image_paths, label_paths, train_transforms, val_transforms, test_transforms=None, batch_size_train=32, batch_size_val=1, batch_size_test=1, dataset_type='CacheDataset', num_workers=0, num_workers_cache=None, cache_rate=1.0, tmp_dir='/tmp/temp/', collate_fn=pad_list_data_collate):
     '''
     - label_paths can be None to facilitate test dataloader
     - train_files, val_files [data_dict]: {"image": str(image_name), "label": str(label_name)}
@@ -135,6 +136,27 @@ class DataModule(pl.LightningDataModule):
     self.test_data = Dataset(self.test_data_dicts,transform=self.test_transforms)
     return ThreadDataLoader(self.test_data, batch_size=self.batch_size_test, shuffle=False, num_workers=0)
 
+  def get_label_class_weights(self, out_channels):
+    '''
+    Calculate the label class weight on training data for balanced training
+    - out_channels: label class number, used as `out_channels` when defining the model architecture
+    :return:
+    - self.label_class_weight
+    (to be used as
+      - `ce_weight` in the CELoss/DiceCELoss, or
+      - `focal_weight` in the FocalLoss)
+    '''
+    # initialize weight
+    weight = torch.tensor([0.] * out_channels).to(torch.float)  # same as: torch.Tensor([1.,1.])
+    # going through the training data to calculate pixel number for each label class
+    for batch in self.train_dataloader():
+      for c in range(out_channels):
+        weight[c] += (batch['label'] == c).sum()
+    # calculate inverse weight
+    weight = weight.sum()/weight
+    weight = weight.to(torch.float)
+    self.label_class_weight = weight
+    return self.label_class_weight
 
 
 

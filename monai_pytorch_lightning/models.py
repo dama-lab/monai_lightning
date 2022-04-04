@@ -5,7 +5,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import torchmetrics
 
 import monai
-from monai.losses import DiceLoss
+from torch.nn import CrossEntropyLoss
+from monai.losses import DiceLoss, DiceCELoss, DiceFocalLoss, FocalLoss
 from monai.metrics import DiceMetric # (depreciated): compute_meandice
 from monai.networks.layers import Norm
 from monai.networks.nets import UNet
@@ -162,7 +163,8 @@ class UNet3DModule(pl.LightningModule):
   https://colab.research.google.com/drive/1swTt4hH9gguJ1ovwfwcpC5q9P0vkBJb7#scrollTo=vVI2lj36wp4Z
   '''
   def __init__(self, net, lr=1e-4, 
-               loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
+               loss_function = monai.losses.DiceCELoss,
+               label_class_weight = None,
                optimizer_class=monai.optimizers.Novograd,
                roi_size = (64, 64, 64),
                sw_batch_size=2,
@@ -188,16 +190,18 @@ class UNet3DModule(pl.LightningModule):
     
     '''
     super().__init__()
+    # self.device = device # lightning set self.device internally, doesnot allow user-definition
     self.sw_device = device
     self.val_device = val_device
-    self._model = net.to(device)
+    self._model = net.to(self.device)
     self.optimizer_class = optimizer_class
     self.lr = lr
     self.loss_function = loss_function # include_background=True
+    self.label_class_weight = label_class_weight
     self.roi_size = roi_size
     self.sw_batch_size = sw_batch_size
-    self.post_pred = t.Compose([t.EnsureType(), t.AsDiscrete(argmax=True, to_onehot=True, n_classes=net.out_channels)])
-    self.post_label = t.Compose([t.EnsureType(), t.AsDiscrete(to_onehot=True, n_classes=net.out_channels)])
+    self.post_pred = t.Compose([t.EnsureType(), t.AsDiscrete(argmax=True, to_onehot=net.out_channels)])
+    self.post_label = t.Compose([t.EnsureType(), t.AsDiscrete(to_onehot=net.out_channels)])
     self.dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False) # `get_not_nans=True` will return a second value
     self.best_val_dice = 0
     self.best_val_epoch = 0
@@ -243,7 +247,14 @@ class UNet3DModule(pl.LightningModule):
   def training_step(self, train_batch, batch_idx):
     images, labels = train_batch["image"], train_batch["label"] #.to(device)
     output = self.forward(images)
-    loss = self.loss_function(output, labels)
+    if self.label_class_weight is not None:
+      if (self.loss_function == DiceCELoss) or (self.loss_function == CrossEntropyLoss):
+        calc_loss = self.loss_function(to_onehot_y=True, softmax=True, ce_weight=self.label_class_weight.to(self.device))
+      elif (self.loss_function == DiceFocalLoss) or (self.loss_function == FocalLoss):
+        calc_loss = self.loss_function(to_onehot_y=True, softmax=True, focal_weight=self.label_class_weight.to(self.device))
+    else:
+      calc_loss = self.loss_function(to_onehot_y=True, softmax=True)
+    loss = calc_loss(output, labels)
     # logs metrics for each training_step,
     # and average across the epoch, to the progress bar and logger
     self.log('train_loss', loss.item(), prog_bar=True, logger=True) # , on_step=True, on_epoch=True
@@ -262,8 +273,19 @@ class UNet3DModule(pl.LightningModule):
       
       with torch.no_grad():
         outputs = sliding_window_inference(images, self.roi_size, self.sw_batch_size, predictor=self.forward_val, sw_device=self.sw_device,  device=self.val_device).to(self.val_device)
+
         # calculate losses
-        loss = self.loss_function(outputs, labels)
+        if self.label_class_weight is not None:
+          if (self.loss_function == DiceCELoss) or (self.loss_function == CrossEntropyLoss):
+            calc_loss = self.loss_function(to_onehot_y=True, softmax=True,
+                                           ce_weight=self.label_class_weight.to(self.val_device))
+          elif (self.loss_function == DiceFocalLoss) or (self.loss_function == FocalLoss):
+            calc_loss = self.loss_function(to_onehot_y=True, softmax=True,
+                                           focal_weight=self.label_class_weight.to(self.val_device))
+        else:
+          calc_loss = self.loss_function(to_onehot_y=True, softmax=True)
+        loss = calc_loss(outputs, labels)
+
         # calculate metrics
         outputs = [self.post_pred(i) for i in decollate_batch(outputs)]
         labels = [self.post_label(i) for i in decollate_batch(labels)]
@@ -366,7 +388,8 @@ class UNet3DModule(pl.LightningModule):
 # %%
 class UNet2DModule(UNet3DModule):
   def __init__(self, net, lr=1e-4, 
-               loss_function=monai.losses.DiceCELoss(to_onehot_y=True, softmax=True),
+               loss_function=monai.losses.DiceCELoss,  # (to_onehot_y=True, softmax=True)
+               label_class_weight=None,
                roi_size = (512, 512, 1),
                optimizer_class=torch.optim.AdamW, 
                device=torch.device("cuda:0"),

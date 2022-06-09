@@ -95,7 +95,7 @@ class DataModule(pl.LightningDataModule):
     # define steps done only on GPU, e.g getting/downloading data
     return
 
-  def setup(self, val_idx=-2, stage=None):
+  def setup(self, val_idx=-2, stage=None, verbose=True):
     # define steps done on every GPU, e.g. split data, apply transform on dataset
     # Question: whether the part below shall be in prepare_data or setup?
     set_determinism(seed=0)
@@ -110,14 +110,18 @@ class DataModule(pl.LightningDataModule):
       # Ref: https://github.com/Project-MONAI/tutorials/blob/master/acceleration/fast_training_tutorial.ipynb
       
       # training data
+      if verbose==True: print(f'\nsetting up training data ...')
       self.train_data = CacheDataset(data=self.train_files, transform=self.train_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate, copy_cache=False,)
       # validation data
+      if verbose==True: print(f'\nsetting up validation data ...')
       self.valid_data = CacheDataset(data=self.val_files, transform=self.val_transforms, num_workers=self.num_workers_cache, cache_rate=self.cache_rate, copy_cache=False,)
     elif self.dataset_type == "PersistentDataset":
       # (for final production)
       # training data
+      if verbose == True: print(f'\nsetting up training data ...')
       self.train_data = PersistentDataset(data=self.train_files, transform=self.train_transforms, cache_dir=self.persistent_cache_dir)
       # validation data
+      if verbose == True: print(f'\nsetting up validation data ...')
       self.valid_data = PersistentDataset(data=self.val_files, transform=self.val_transforms, cache_dir=self.persistent_cache_dir)
 
     # self.test_data not yet defined

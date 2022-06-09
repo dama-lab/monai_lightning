@@ -122,31 +122,57 @@ class MoveToDeviced(MapTransform):
         return d
 
 # %% setup transforms for training and validation
-def transforms_3d(pixdim=(1.0, 1.0, 1.2), patch_size=(96, 96, 96), axcodes="RAS", label_transformations=[]):
+def transforms_3d(pixdim=(1.0, 1.0, 1.0), patch_size=(96, 96, 96), axcodes="RAS", crop_forground_source_key="label", crop_forground_select_fn=None, label_transformations=[],additional_deterministic_transforms=[], additional_random_transforms=[]):
   '''
   - Sample `label_transformations` function:
     - T1 leision label: `LabelValueScaled(keys=['label'],scale=1)` # doing nothing
     - T2 leision label: `LabelValueScaled(keys=['label'],scale=1/1000)`
-    - T1 parcellation label: need to remap, not yet implemented 
+    - T1 parcellation label: need to remap, not yet implemented
     - get nifty pixel dimension using: nib.load(*).header.get_zooms()
   '''
-  train_transforms = t.Compose([
-    # deterministic
-    t.LoadImaged(keys=["image","label"]),
-    t.AddChanneld(keys=["image"]),
-    t.Spacingd(keys=["image"], pixdim=pixdim, mode=("bilinear", "nearest"),),
-    t.Orientationd(keys=["image", "label"], axcodes=axcodes),
-    # scale label value (maxmum value of the current dataset is: 2769630.8 (float32))
-    # t.ScaleIntensityRanged(keys=["image","label"], a_min=0, a_max=2800000, b_min=0.0, b_max=1.0, clip=True),
-    # CropForeground by default create bbox that exclude surrounding zero pixels in the "image"
-    t.CropForegroundd(keys=["image", "label"], source_key="image"),
-    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-    *label_transformations,
-    # LabelValueScaled(keys=['label'],scale=1),
-    
-    # random transformation
-    # randomly crop out patch samples from big image based on pos / neg ratio
-    # the image centers of negative samples must be in valid image area
+
+#  === deterministic ===
+  def set_deterministic_transforms(keys=["image", "label"],interpolate_mode={"bilinear", "nearest"}, crop_forground_source_key=crop_forground_source_key,crop_forground_select_fn=crop_forground_select_fn):
+    '''setup deterministic transforms
+    rotate90_k: time to perform rotate90
+    '''
+    # transpose = rotate 90 + flip
+
+    deterministic_transforms = [
+      t.LoadImaged(keys=keys),
+      t.AddChanneld(keys=keys),
+      t.Spacingd(keys=keys, pixdim=pixdim, mode=(interpolate_mode)),
+      t.Orientationd(keys=keys, axcodes=axcodes),
+      t.CropForegroundd(keys=keys, source_key="image"),
+      *additional_deterministic_transforms,
+      *label_transformations,
+    ]
+
+    # select only the forground region
+    if crop_forground_select_fn is not None:
+      deterministic_transforms.append(
+        t.CropForegroundd(keys=keys, source_key=crop_forground_source_key, select_fn=crop_forground_select_fn),
+      )
+
+    # pre-compute foreground and background indexes and cache them to accelerate training # https://github.com/Project-MONAI/tutorials/blob/master/acceleration/fast_training_tutorial.ipynb
+    if "label" in keys:
+      deterministic_transforms.append(
+        t.FgBgToIndicesd(
+          keys="label",
+          fg_postfix="_fg",
+          bg_postfix="_bg",
+          image_key="image",
+          ),
+        )
+      # only normalize "image" intensity
+      deterministic_transforms.append(t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),)
+
+    return deterministic_transforms
+
+  # random transformation
+  # randomly crop out patch samples from big image based on pos / neg ratio
+  # the image centers of negative samples must be in valid image area
+  random_transform = [
     t.RandCropByPosNegLabeld(
       keys=["image", "label"],
       label_key="label",
@@ -155,52 +181,44 @@ def transforms_3d(pixdim=(1.0, 1.0, 1.2), patch_size=(96, 96, 96), axcodes="RAS"
       neg=1,
       num_samples=4,
       image_key="image",
-      image_threshold=0,),
+      image_threshold=0, ),
     t.RandScaleIntensityd(keys='image', factors=0.1, prob=0.5),
     t.RandShiftIntensityd(keys='image', offsets=0.1, prob=0.5),
     t.RandAffined(
-      keys=["image","label"],
-      mode=("bilinear","nearest"),
+      keys=["image", "label"],
+      mode=("bilinear", "nearest"),
       prob=0.5,
       spatial_size=patch_size,
-      rotate_range=(0, 0, ),
-      scale_range=(0.1,0.1,0.1),
+      rotate_range=(0, 0,),
+      scale_range=(0.1, 0.1, 0.1),
     ),
-    t.ToTensord(keys=["image","label"]),
+    *additional_random_transforms,
+  ]
+
+  # ===== train transform =====
+  train_transforms = t.Compose([
+    *set_deterministic_transforms(keys=["image", "label"]),
+    *random_transform,
+    t.ToTensord(keys=["image", "label"]),
     t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
   ])
+
+  # ===== valid transform =====
   val_transforms = t.Compose([
-    # deterministic
-    t.LoadImaged(keys=["image","label"]),
-    t.AddChanneld(keys=['image','label']),
-    t.Spacingd(keys=['image','label'],pixdim=pixdim, mode=("bilinear", "nearest"),),
-    t.Orientationd(keys=["image", "label"], axcodes=axcodes),
-    # t.Resized(keys=["image","label"], spatial_size=val_resize)
-    t.CropForegroundd(keys=["image", "label"], source_key="image"), # might cause validation dataset to be different
-    # crop the center region
-    # t.CenterSpatialCropd(keys=["image","label"], roi_size=patch_size),
-    # scale label value
-    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-    *label_transformations,
-    t.ToTensord(keys=["image","label"]),
+    *set_deterministic_transforms(keys=["image", "label"]),
+    t.ToTensord(keys=["image", "label"]),
     t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
+    MoveToDeviced(keys=["image", "label"], device='cpu')
   ])
+
+  # ===== test transform =====
   test_transforms = t.Compose([
-    # deterministic
-    t.LoadImaged(keys=["image"]),
-    t.AddChanneld(keys=["image"]),
-    t.Spacingd(keys=["image"],pixdim=pixdim, mode=("bilinear", "nearest"),),
-    t.Orientationd(keys=["image"], axcodes=axcodes),
-    # t.Resized(keys=["image"], spatial_size=val_resize)
-    t.CropForegroundd(keys=["image"], source_key="image"), # might cause validation dataset to be different
-    # crop the center region
-    # t.CenterSpatialCropd(keys=["image"], roi_size=patch_size),
-    # scale label value
-    t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-    *label_transformations,
+    *set_deterministic_transforms(keys=["image"],interpolate_mode={"bilinear"}),
     t.ToTensord(keys=["image"]),
     t.EnsureTyped(keys=["image"], data_type='tensor'),
+    MoveToDeviced(keys=["image"], device='cpu'),
   ])
+
   return train_transforms, val_transforms, test_transforms
 
 # %% for 2D convolutional neural network
@@ -275,6 +293,7 @@ def transforms_2d(patch_size=(512,512,1), crop_forground_source_key="label", cro
     t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
   ])
 
+  # ===== valid transform =====
   val_transforms = t.Compose([
     *set_deterministic_transforms(keys=["image","label"]),
     t.ToTensord(keys=["image","label"]),
@@ -282,6 +301,7 @@ def transforms_2d(patch_size=(512,512,1), crop_forground_source_key="label", cro
     MoveToDeviced(keys=["image", "label"], device='cpu')
   ])
 
+  # ===== test transform =====
   test_transforms = t.Compose([
     *set_deterministic_transforms(keys=["image"]),
     t.ToTensord(keys=["image"]),
@@ -290,3 +310,90 @@ def transforms_2d(patch_size=(512,512,1), crop_forground_source_key="label", cro
   ])
 
   return train_transforms, val_transforms, test_transforms
+
+
+# %% old implementation of transforms_3d
+# def transforms_3d_old(pixdim=(1.0, 1.0, 1.0), patch_size=(96, 96, 96), label_transformations=[], axcodes="RAS"):
+#   '''
+#   - Sample `label_transformations` function:
+#     - T1 leision label: `LabelValueScaled(keys=['label'],scale=1)` # doing nothing
+#     - T2 leision label: `LabelValueScaled(keys=['label'],scale=1/1000)`
+#     - T1 parcellation label: need to remap, not yet implemented
+#     - get nifty pixel dimension using: nib.load(*).header.get_zooms()
+#   '''
+#   train_transforms = t.Compose([
+#     # deterministic
+#     t.LoadImaged(keys=["image", "label"]),
+#     t.AddChanneld(keys=["image", "label"]),
+#     t.Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear", "nearest")),  #
+#     t.Orientationd(keys=["image", "label"], axcodes=axcodes),  # as_closest_canonical=False shall be correct?
+#     # scale label value (maxmum value of the current dataset is: 2769630.8 (float32))
+#     # t.ScaleIntensityRanged(keys=["image","label"], a_min=0, a_max=2800000, b_min=0.0, b_max=1.0, clip=True),
+#     # CropForeground by default create bbox that exclude surrounding zero pixels in the "image"
+#     t.CropForegroundd(keys=["image", "label"], source_key="image"),
+#     t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+#     *label_transformations,
+#     # LabelValueScaled(keys=['label'],scale=1),
+#
+#     # random transformation
+#     # randomly crop out patch samples from big image based on pos / neg ratio
+#     # the image centers of negative samples must be in valid image area
+#     t.RandCropByPosNegLabeld(
+#       keys=["image", "label"],
+#       label_key="label",
+#       spatial_size=patch_size,
+#       pos=1,
+#       neg=1,
+#       num_samples=4,
+#       image_key="image",
+#       image_threshold=0, ),
+#     t.RandScaleIntensityd(keys='image', factors=0.1, prob=0.5),
+#     t.RandShiftIntensityd(keys='image', offsets=0.1, prob=0.5),
+#     t.RandAffined(
+#       keys=["image", "label"],
+#       mode=("bilinear", "nearest"),
+#       prob=0.5,
+#       spatial_size=patch_size,
+#       rotate_range=(0, 0,),
+#       scale_range=(0.1, 0.1, 0.1),
+#     ),
+#
+#     t.ToTensord(keys=["image", "label"]),
+#     t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
+#   ])
+#
+#   val_transforms = t.Compose([
+#     # deterministic
+#     t.LoadImaged(keys=["image", "label"]),
+#     t.AddChanneld(keys=['image', 'label']),
+#     t.Spacingd(keys=['image', 'label'], pixdim=pixdim, mode=("bilinear", "nearest"), ),
+#     t.Orientationd(keys=["image", "label"], axcodes=axcodes),
+#     # as_closest_canonical=True), # axcodes=axcodes, # as_closest_canonical=False shall be correct?
+#     # t.Resized(keys=["image","label"], spatial_size=val_resize)
+#     # t.CropForegroundd(keys=["image", "label"], source_key="image"), # might cause validation dataset to be different
+#     # crop the center region
+#     # t.CenterSpatialCropd(keys=["image","label"], roi_size=patch_size),
+#     # scale label value
+#     t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+#     *label_transformations,
+#     t.ToTensord(keys=["image", "label"]),
+#     t.EnsureTyped(keys=["image", "label"], data_type='tensor'),
+#   ])
+#
+#   test_transforms = t.Compose([
+#     # deterministic
+#     t.LoadImaged(keys=["image"]),
+#     t.AddChanneld(keys=["image"]),
+#     t.Spacingd(keys=["image"], pixdim=pixdim, mode=("bilinear"), ),  # , "nearest"
+#     # t.Orientationd(keys=["image"], as_closest_canonical=True), # axcodes=axcodes, # as_closest_canonical=False shall be correct?
+#     # t.Resized(keys=["image"], spatial_size=val_resize)
+#     # t.CropForegroundd(keys=["image"], source_key="image"), # might cause validation dataset to be different
+#     # crop the center region
+#     # t.CenterSpatialCropd(keys=["image"], roi_size=patch_size),
+#     # scale label value
+#     t.NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+#     *label_transformations,
+#     t.ToTensord(keys=["image"]),
+#     t.EnsureTyped(keys=["image"], data_type='tensor'),
+#   ])
+#   return train_transforms, val_transforms, test_transforms
